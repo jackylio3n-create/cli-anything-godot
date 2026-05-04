@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from cli_anything.godot.bridge_client import bridge_paths
 from cli_anything.godot.core import (
@@ -77,3 +78,20 @@ class BridgePathTests(unittest.TestCase):
             paths = bridge_paths(tmpdir)
             self.assertTrue(str(paths["request_path"]).startswith(tmpdir))
             self.assertTrue(str(paths["response_path"]).startswith(tmpdir))
+
+    def test_bridge_paths_honor_documented_env_vars(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            request_path = Path(tmpdir) / "requests" / "request.json"
+            response_path = Path(tmpdir) / "responses" / "response.json"
+            with patch.dict(
+                "os.environ",
+                {
+                    "CLI_ANYTHING_GODOT_REQUEST": str(request_path),
+                    "CLI_ANYTHING_GODOT_RESPONSE": str(response_path),
+                    "CLI_ANYTHING_GODOT_STATE_DIR": "res://bridge_state",
+                },
+            ):
+                paths = bridge_paths(tmpdir)
+        self.assertEqual(paths["state_dir"], Path(tmpdir) / "bridge_state")
+        self.assertEqual(paths["request_path"], request_path)
+        self.assertEqual(paths["response_path"], response_path)

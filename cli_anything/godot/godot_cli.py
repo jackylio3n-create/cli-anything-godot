@@ -63,6 +63,13 @@ REPL_COMMANDS = {
 }
 
 
+class CliError(RuntimeError):
+    def __init__(self, message: str, *, code: str = "runtime_error", details: dict | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.details = details or {}
+
+
 def normalize_program_name(program_name: str | None) -> str:
     candidate = Path(program_name or "").name.strip()
     return candidate or PUBLIC_PROGRAM_NAME
@@ -91,8 +98,8 @@ def repl_help_text(program_name: str | None = None) -> str:
             "  scene new @project/scenes/main.tscn --root-type Node2D",
             "  script new @project/scripts/player.gd --extends CharacterBody2D --class Player",
             "  asset sprite @project/assets/player.png --project-dir @project --shape circle",
-            "  import run --project @project",
-            "  editor install-bridge --project @project",
+            "  import run",
+            "  editor install-bridge",
         ]
     )
 
@@ -141,6 +148,8 @@ def handle_errors(func):
             return func(*args, **kwargs)
         except SystemExit:
             raise
+        except CliError as exc:
+            fail(ctx, str(exc), code=exc.code, details=exc.details)
         except Exception as exc:  # noqa: BLE001
             fail(ctx, str(exc), code=type(exc).__name__)
 
@@ -186,12 +195,34 @@ def _set_godot_env(godot_bin: str | None) -> None:
 def dispatch(argv: list[str], prog_name: str = PUBLIC_PROGRAM_NAME) -> int:
     try:
         cli.main(args=argv, prog_name=prog_name, standalone_mode=False)
+    except click.ClickException as exc:
+        exc.show()
+        return exc.exit_code
     except SystemExit as exc:
         code = exc.code
         if isinstance(code, int):
             return code
         return 1
     return 0
+
+
+def _raise_on_failed_process(result: dict[str, object], action: str) -> None:
+    if bool(result.get("ok")):
+        return
+    returncode = result.get("returncode")
+    stderr = str(result.get("stderr") or "").strip()
+    stdout = str(result.get("stdout") or "").strip()
+    detail = stderr or stdout or "no process output"
+    raise CliError(
+        f"Godot {action} failed (exit {returncode}): {detail[-500:]}",
+        code="backend_process_failed",
+        details={
+            "returncode": returncode,
+            "stdout": result.get("stdout") or "",
+            "stderr": result.get("stderr") or "",
+            "command": result.get("command") or "",
+        },
+    )
 
 
 @click.group(invoke_without_command=True)
@@ -204,10 +235,6 @@ def cli(ctx: click.Context, use_json: bool, project: str | None, godot_bin: str 
     ctx.ensure_object(dict)
     _set_godot_env(godot_bin)
     ctx.obj.update({"json": use_json, "project": project, "godot_bin": godot_bin})
-    if project:
-        session = load_session_state()
-        session["current_project"] = str(Path(project).expanduser().resolve())
-        save_session_state(session)
     if ctx.invoked_subcommand is None:
         ctx.invoke(repl)
 
@@ -509,6 +536,7 @@ def run_game(ctx: click.Context, scene_path: str | None, headless: bool, quit: b
     project_dir = _resolve_project(ctx)
     extra_args = ["--quit"] if quit else None
     result = run_project(project_dir, scene_path=scene_path, headless=headless, extra_args=extra_args)
+    _raise_on_failed_process(result, "run")
     emit_output(ctx, {"ok": True, "project_dir": str(project_dir), **result})
 
 
@@ -573,10 +601,12 @@ def export_pack(ctx: click.Context, preset: str, output_path: str, overwrite: bo
     if not headless:
         raise RuntimeError("Current backend only supports pack export through headless mode.")
     result = run_godot(["--headless", "--path", str(project_dir), "--export-pack", preset, str(output)])
+    _raise_on_failed_process(result, "pack export")
+    if not output.exists():
+        raise RuntimeError(f"Godot pack export completed without output file: {output}")
     result["output"] = str(output)
-    result["file_exists"] = output.exists()
-    if output.exists():
-        result["file_size"] = output.stat().st_size
+    result["file_exists"] = True
+    result["file_size"] = output.stat().st_size
     emit_output(ctx, {"ok": result["ok"], "project_dir": str(project_dir), **result})
 
 
@@ -670,8 +700,31 @@ def inspect_files(ctx: click.Context) -> None:
     project_dir = _resolve_project(ctx)
     scenes = sorted(str(path.relative_to(project_dir)) for path in project_dir.rglob("*.tscn"))
     scripts = sorted(str(path.relative_to(project_dir)) for path in project_dir.rglob("*.gd"))
-    assets = sorted(str(path.relative_to(project_dir)) for path in project_dir.rglob("*.png"))
-    payload = {"ok": True, "project_dir": str(project_dir), "scenes": scenes, "scripts": scripts, "assets": assets}
+    assets = sorted(
+        str(path.relative_to(project_dir))
+        for pattern in ("*.png", "*.jpg", "*.jpeg", "*.webp", "*.svg", "*.wav", "*.ogg", "*.mp3")
+        for path in project_dir.rglob(pattern)
+    )
+    resources = sorted(
+        str(path.relative_to(project_dir))
+        for pattern in ("*.tres", "*.res", "*.import")
+        for path in project_dir.rglob(pattern)
+    )
+    configs = sorted(
+        str(path.relative_to(project_dir))
+        for name in ("project.godot", "export_presets.cfg")
+        for path in [project_dir / name]
+        if path.exists()
+    )
+    payload = {
+        "ok": True,
+        "project_dir": str(project_dir),
+        "configs": configs,
+        "scenes": scenes,
+        "scripts": scripts,
+        "assets": assets,
+        "resources": resources,
+    }
     if root_json_output(ctx):
         emit_json(payload)
     else:

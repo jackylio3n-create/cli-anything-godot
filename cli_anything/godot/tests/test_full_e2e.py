@@ -35,6 +35,7 @@ class HarnessE2ETests(unittest.TestCase):
                 ["--json", "script", "new", str(Path(tmpdir) / "scripts" / "player.gd"), "--extends", "CharacterBody2D", "--class", "Player"],
                 ["--json", "script", "autoload", str(Path(tmpdir) / "scripts" / "game_state.gd")],
                 ["--json", "asset", "tone", str(Path(tmpdir) / "assets" / "jump.wav"), "--frequency", "660"],
+                ["--json", "asset", "sprite", str(Path(tmpdir) / "assets" / "player.png"), "--project-dir", tmpdir],
                 ["--json", "--project", tmpdir, "inspect", "files"],
             ]
             last = None
@@ -42,8 +43,11 @@ class HarnessE2ETests(unittest.TestCase):
                 last = self.run_cli(command)
                 self.assertEqual(last.returncode, 0, msg=last.stderr)
             data = json.loads(last.stdout)
+            self.assertIn("project.godot", data["configs"])
             self.assertIn("scenes/level_1.tscn", data["scenes"])
             self.assertIn("scripts/player.gd", data["scripts"])
+            self.assertIn("assets/jump.wav", data["assets"])
+            self.assertIn("assets/player.png.import", data["resources"])
 
 
 @unittest.skipUnless(HAS_GODOT, "Godot executable not available in this environment")

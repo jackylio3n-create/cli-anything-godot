@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import time
 import uuid
@@ -14,7 +15,23 @@ def packaged_bridge_dir() -> Path:
 
 
 def default_bridge_state_dir(project_dir: str | Path) -> Path:
+    state_dir = os.environ.get("CLI_ANYTHING_GODOT_STATE_DIR", "").strip()
+    if state_dir:
+        return _resolve_bridge_path(project_dir, state_dir)
     return Path(project_dir).resolve() / ".cli_anything_godot_bridge"
+
+
+def _resolve_bridge_path(project_dir: str | Path, value: str | Path) -> Path:
+    raw = str(value).strip()
+    project_root = Path(project_dir).resolve()
+    if raw.startswith("res://"):
+        return project_root / raw.removeprefix("res://")
+    if raw.startswith("user://"):
+        raise ValueError(
+            "user:// bridge paths cannot be resolved by the external Python client; "
+            "use an absolute path or res:// path for CLI-driven bridge requests."
+        )
+    return Path(raw).expanduser().resolve()
 
 
 def install_bridge(project_dir: str | Path) -> dict[str, str]:
@@ -39,10 +56,12 @@ def install_bridge(project_dir: str | Path) -> dict[str, str]:
 
 def bridge_paths(project_dir: str | Path) -> dict[str, Path]:
     state_dir = default_bridge_state_dir(project_dir)
+    request_env = os.environ.get("CLI_ANYTHING_GODOT_REQUEST", "").strip()
+    response_env = os.environ.get("CLI_ANYTHING_GODOT_RESPONSE", "").strip()
     return {
         "state_dir": state_dir,
-        "request_path": state_dir / "request.json",
-        "response_path": state_dir / "response.json",
+        "request_path": _resolve_bridge_path(project_dir, request_env) if request_env else state_dir / "request.json",
+        "response_path": _resolve_bridge_path(project_dir, response_env) if response_env else state_dir / "response.json",
         "status_path": state_dir / "status.json",
     }
 
